@@ -1264,15 +1264,24 @@ static int bar_frag_only(int bits) {
     static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER_FRAG"); v = !(e && !strcmp(e, "0")); }
     return v && bits && !(bits & ~(NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT));
 }
+// DM_NVN_BARRIER=game while image heaps exist (resolution families, image_texture; GPU-only pool heaps, pool_heap_texture). The relaxed end barrier already carries resource_vis(),
+// so a pass's writes are flushed for aliases before the next pass's fragment, compute and copy work, as the full start barrier would flush them; the next pass's vertex work may
+// overlap as it does without heaps, and a game barrier other than fragment ordering still gives the full barrier. Gating the mode on g_image_heap_n turned it off for the whole run
+// as soon as one heap existed: Ocarina of Time on main makes one for its dynamic-resolution depth family, and a run logged "draw-pass entry barriers full 30,271-33,563 / saved 0"
+// per window, about 200 full barriers a frame (the game's note: GPU 25 -> 18 ms with the mode). DM_NVN_BARRIER_HEAP=0 brings the full barriers back while a heap exists
+static int bar_heap_ok(void) {
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER_HEAP"); v = !(e && !strcmp(e, "0")); }
+    return v || !g_image_heap_n;
+}
 static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) { g_cm_enc++; cm_enc_mark(2);   // the draw passes (rp_begin_ex); see barrier_game
     id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; cm_enc_mark(0);
-    if (g_last_end_relaxed && (!g_game_barrier || bar_frag_only(g_game_bar_bits)) && barrier_game() && !g_image_heap_n) g_bar_skip++;
+    if (g_last_end_relaxed && (!g_game_barrier || bar_frag_only(g_game_bar_bits)) && barrier_game() && bar_heap_ok()) g_bar_skip++;
     else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; }
     g_game_barrier = 0; g_game_bar_bits = 0;
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e;
 }
 static inline void enc_r_end_pass(id e) {
-    if (!barrier_game() || g_image_heap_n) { m4_end(e); return; }
+    if (!barrier_game() || !bar_heap_ok()) { m4_end(e); return; }
     gp_end(e); [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:resource_vis()];
     [e endEncoding]; g_last_end_relaxed = 1;
 }
