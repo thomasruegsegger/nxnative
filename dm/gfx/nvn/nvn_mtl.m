@@ -2616,7 +2616,7 @@ static void rc_reclaim(int i) {   // caller holds g_rc_mu, not g_smu
     pthread_mutex_lock(&g_smu);
     __unsafe_unretained id m = hm_get_id(&g_alias, &e->k);
     if (!m) { pthread_mutex_unlock(&g_smu); rcb_del(i); return; }
-    if (serial_holds(&g_ghost, m)) { g_rc_ghost++; pthread_mutex_unlock(&g_smu); return; }   // a finalized serial a record may still replay: kept
+    { uintptr_t gk = (uintptr_t)(__bridge void *)m; if (g_ghost_held.n && nvn_hm_get(&g_ghost_held, &gk)) { g_rc_ghost++; pthread_mutex_unlock(&g_smu); return; } }   // a finalized serial a record may still replay: kept (g_ghost_held counts the ghost ring's holders since main's fa9cfb84)
     for (uint32_t j = 0; j < g_by_serial.cap && nk < 64; j++) if (g_by_serial.vals[j] == (__bridge void *)m) memcpy(&keys[nk++], g_by_serial.keys + (size_t)j * g_by_serial.klen, 8);
     pthread_mutex_unlock(&g_smu);
     if (nk == 64) return;   // more holders than followed: kept
