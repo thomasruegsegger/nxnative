@@ -2125,6 +2125,19 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
     *t0 = atomic_load(&g_gpu[k].t0); *t1 = atomic_load(&g_gpu[k].t1);
     return *t1 >= *t0 && *t1;
 }
+// The frame's GPU time as the frame step judges it (hle_nvn.c fstep_tick): the span from its first command buffer's start to its last one's end when that is shorter than their
+// sum. The sum counts again what overlaps (a frame's Metal 4 commits run into each other), so it read 1.4-1.7 times the frame's span: Ocarina of Time on an M1 Pro, GPU p50 40.7 ms
+// at hold 3 where DM_NVN_GPUPROF measured 24.0-29.6 ms from first start to last end, and 29.1 ms at hold 2 against 20.9. The frame step took the sum for the frame's cost, so 3 late
+// frames at hold 1 stepped straight to hold 3 (cost 2.24 vsyncs, 20 fps) and a trial back to 2 needed 30 frames in a row under 28.3 ms of it, which never came: 1,463 of 1,800
+// frames at hold 3. Neither figure can read under the GPU's busy time (the union of the command buffers), and the smaller is the nearer. DM_FSTEP_GPU_SPAN=0 judges by the sum
+// as before (ab with DM_AB)
+static int fstep_span_mode(void) { static int m = -1; if (m < 0) m = sw_mode("DM_FSTEP_GPU_SPAN", 1); return m; }
+double mtl_gpu_frame_ms(uint64_t f) {
+    double sum = mtl_gpu_ms(f); uint64_t t0, t1;
+    if (sum < 0 || !sw_on(fstep_span_mode()) || !mtl_gpu_span(f, &t0, &t1)) return sum;
+    double span = (t1 - t0) / 1e6;
+    return span < sum ? span : sum;
+}
 static void rp_flush(void);
 static const char *cctx_snap(void);   // What is in this submission (printed into the failure line on error; defined before mtl_exec)
 typedef struct cbs_list cbs_list;   // The game's shaders one command buffer encoded (defined before encode_args)

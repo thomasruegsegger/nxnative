@@ -228,6 +228,7 @@ void mtl_ab_gpu(uint64_t f, double gpu_ms, double frame_ms);   // DM_AB phases (
 void mtl_sub_index(const uint64_t *h, int n);   // Start of submission: build the store lookahead index in replay order (nvn_mtl.m)
 void xv_test_counts(int *dc, int *viol);
 int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1);   // The frame's earliest GPUStart / latest GPUEnd (mach absolute time, ns); returns 0 if not all complete or there is no GPU time
+double mtl_gpu_frame_ms(uint64_t f);   // The frame's GPU time for the frame step: the smaller of mtl_gpu_ms (the sum, which counts overlapping command buffers again) and the span; −1 as mtl_gpu_ms (DM_FSTEP_GPU_SPAN=0: the sum)
 void mtl_stats(uint64_t *passes, uint64_t *draws);
 void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
 void mtl_use_stats(uint64_t *call, uint64_t *skip);
