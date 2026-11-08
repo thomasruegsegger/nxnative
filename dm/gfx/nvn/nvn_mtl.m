@@ -2246,7 +2246,7 @@ uint64_t mtl_sub_commit(void) {
     g_cb = nil;
     g_commit_blocks = nil;
     objc_autoreleasePoolPop(g_sub_pool); g_sub_pool = NULL;
-    { void rc_tick_(void); rc_tick_(); }   // DM_NVN_RT_RECLAIM
+    { void rtr_tick_(void); rtr_tick_(); }   // DM_NVN_RT_RECLAIM
     return fence;
 }
 
@@ -2597,27 +2597,27 @@ static alias_key tex_alias_key(const tex_t *t) {
 // its last use, zero-filled as a new one is; the list keeps a texture 15 frames. Writes this does not see (shader image stores, copies, clears outside a pass, uploads) exclude
 // their textures instead: IMAGE textures, copy / clear destinations, readback sources, pool copies over their range, sparse pools and textures filled from pool bytes never go
 int nvn_sparse_pool(const void *pool);
-@interface RcFree : NSObject { @public id<MTLTexture> t; uint64_t fence, frame; } @end
-@implementation RcFree @end
-typedef struct { alias_key k; uintptr_t lo, hi; uint32_t ncov; int32_t bpos; uint8_t dead, excl, over, used; uintptr_t cov[8][2]; uint64_t dreads, dframes, dlast, dnext; } rc_ent;   // dreads: ID reads while dead; dframes: frames with one; dnext: deaths followed by a read before the next write
-static rc_ent *g_rc; static int g_rc_n, g_rc_cap; static nvn_hmap g_rc_idx = {.klen = sizeof(alias_key)};   // key → index + 1
-static int *g_rcb; static int g_rcb_n, g_rcb_cap;   // indices of the entries the overlap scan visits (live, not reclaimed)
-static nvn_hmap g_rc_gone = {.klen = 8};             // serial → 1 while its texture was reclaimed and it has not been written again
-static NSMutableArray *g_rc_free; static pthread_mutex_t g_rc_mu = PTHREAD_MUTEX_INITIALIZER; static int g_rc_on_ = -1;
-static uint64_t g_rc_deaths, g_rc_reclaims, g_rc_reuses, g_rc_trims, g_rc_ghost, g_rc_again, g_rc_sampled, g_rc_excl_n, g_rc_free_bytes;
-static int rc_on(void) { if (g_rc_on_ < 0) { g_rc_on_ = getenv("DM_NVN_RT_RECLAIM") != NULL; if (g_rc_on_) MLOG("DM_NVN_RT_RECLAIM: render targets dead by overwrite are reclaimed (free list by descriptor, 15 frames)"); } return g_rc_on_; }
-static void rcb_add(int i) { if (g_rc[i].bpos >= 0) return; if (g_rcb_n == g_rcb_cap) { g_rcb_cap = g_rcb_cap ? g_rcb_cap * 2 : 1024; g_rcb = realloc_or_die(g_rcb, g_rcb_cap * sizeof *g_rcb, "rc"); } g_rc[i].bpos = g_rcb_n; g_rcb[g_rcb_n++] = i; }
-static void rcb_del(int i) { int p = g_rc[i].bpos; if (p < 0) return; int last = g_rcb[--g_rcb_n]; g_rcb[p] = last; g_rc[last].bpos = p; g_rc[i].bpos = -1; }
-static int rc_get(const tex_t *t) {   // caller holds g_rc_mu
-    alias_key k = tex_alias_key(t); uintptr_t ix = (uintptr_t)nvn_hm_get(&g_rc_idx, &k);
+@interface RtrFree : NSObject { @public id<MTLTexture> t; uint64_t fence, frame; } @end
+@implementation RtrFree @end
+typedef struct { alias_key k; uintptr_t lo, hi; uint32_t ncov; int32_t bpos; uint8_t dead, excl, over, used; uintptr_t cov[8][2]; uint64_t dreads, dframes, dlast, dnext; } rtr_ent;   // dreads: ID reads while dead; dframes: frames with one; dnext: deaths followed by a read before the next write
+static rtr_ent *g_rtr; static int g_rtr_n, g_rtr_cap; static nvn_hmap g_rtr_idx = {.klen = sizeof(alias_key)};   // key → index + 1
+static int *g_rtrb; static int g_rtrb_n, g_rtrb_cap;   // indices of the entries the overlap scan visits (live, not reclaimed)
+static nvn_hmap g_rtr_gone = {.klen = 8};             // serial → 1 while its texture was reclaimed and it has not been written again
+static NSMutableArray *g_rtr_free; static pthread_mutex_t g_rtr_mu = PTHREAD_MUTEX_INITIALIZER; static int g_rtr_on_ = -1;
+static uint64_t g_rtr_deaths, g_rtr_reclaims, g_rtr_reuses, g_rtr_trims, g_rtr_ghost, g_rtr_again, g_rtr_sampled, g_rtr_excl_n, g_rtr_free_bytes;
+static int rtr_on(void) { if (g_rtr_on_ < 0) { g_rtr_on_ = getenv("DM_NVN_RT_RECLAIM") != NULL; if (g_rtr_on_) MLOG("DM_NVN_RT_RECLAIM: render targets dead by overwrite are reclaimed (free list by descriptor, 15 frames)"); } return g_rtr_on_; }
+static void rtrb_add(int i) { if (g_rtr[i].bpos >= 0) return; if (g_rtrb_n == g_rtrb_cap) { g_rtrb_cap = g_rtrb_cap ? g_rtrb_cap * 2 : 1024; g_rtrb = realloc_or_die(g_rtrb, g_rtrb_cap * sizeof *g_rtrb, "rc"); } g_rtr[i].bpos = g_rtrb_n; g_rtrb[g_rtrb_n++] = i; }
+static void rtrb_del(int i) { int p = g_rtr[i].bpos; if (p < 0) return; int last = g_rtrb[--g_rtrb_n]; g_rtrb[p] = last; g_rtr[last].bpos = p; g_rtr[i].bpos = -1; }
+static int rtr_get(const tex_t *t) {   // caller holds g_rtr_mu
+    alias_key k = tex_alias_key(t); uintptr_t ix = (uintptr_t)nvn_hm_get(&g_rtr_idx, &k);
     if (ix) return (int)ix - 1;
-    if (g_rc_n == g_rc_cap) { g_rc_cap = g_rc_cap ? g_rc_cap * 2 : 4096; g_rc = realloc_or_die(g_rc, g_rc_cap * sizeof *g_rc, "rc"); }
-    rc_ent *e = &g_rc[g_rc_n]; memset(e, 0, sizeof *e); e->k = k; e->bpos = -1; e->lo = (uintptr_t)t->mem; e->hi = e->lo + t->L.size;
+    if (g_rtr_n == g_rtr_cap) { g_rtr_cap = g_rtr_cap ? g_rtr_cap * 2 : 4096; g_rtr = realloc_or_die(g_rtr, g_rtr_cap * sizeof *g_rtr, "rc"); }
+    rtr_ent *e = &g_rtr[g_rtr_n]; memset(e, 0, sizeof *e); e->k = k; e->bpos = -1; e->lo = (uintptr_t)t->mem; e->hi = e->lo + t->L.size;
     e->excl = (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) || !t->mem || !t->L.size || (t->pool && nvn_sparse_pool(t->pool));
-    nvn_hm_put(&g_rc_idx, &k, (void *)(uintptr_t)(g_rc_n + 1));
-    return g_rc_n++;
+    nvn_hm_put(&g_rtr_idx, &k, (void *)(uintptr_t)(g_rtr_n + 1));
+    return g_rtr_n++;
 }
-static int rc_cover(rc_ent *u, uintptr_t a, uintptr_t b) {   // adds [a, b) to u's coverage; 1 when its whole range is covered
+static int rtr_cover(rtr_ent *u, uintptr_t a, uintptr_t b) {   // adds [a, b) to u's coverage; 1 when its whole range is covered
     if (a < u->lo) a = u->lo; if (b > u->hi) b = u->hi; if (a >= b || u->over) return 0;
     uintptr_t out[9][2]; uint32_t n = 0;
     for (uint32_t i = 0; i < u->ncov; i++) { uintptr_t x = u->cov[i][0], y = u->cov[i][1]; if (y < a || x > b) { out[n][0] = x; out[n][1] = y; n++; } else { if (x < a) a = x; if (y > b) b = y; } }
@@ -2627,118 +2627,118 @@ static int rc_cover(rc_ent *u, uintptr_t a, uintptr_t b) {   // adds [a, b) to u
     memcpy(u->cov, out, n * sizeof out[0]); u->ncov = n;
     return n == 1 && u->cov[0][0] <= u->lo && u->cov[0][1] >= u->hi;
 }
-static void rc_reclaim(int i) {   // caller holds g_rc_mu, not g_smu
-    rc_ent *e = &g_rc[i]; uint64_t keys[64]; int nk = 0;
+static void rtr_reclaim(int i) {   // caller holds g_rtr_mu, not g_smu
+    rtr_ent *e = &g_rtr[i]; uint64_t keys[64]; int nk = 0;
     pthread_mutex_lock(&g_smu);
     __unsafe_unretained id m = hm_get_id(&g_alias, &e->k);
-    if (!m) { pthread_mutex_unlock(&g_smu); rcb_del(i); return; }
-    { uintptr_t gk = (uintptr_t)(__bridge void *)m; if (g_ghost_held.n && nvn_hm_get(&g_ghost_held, &gk)) { g_rc_ghost++; pthread_mutex_unlock(&g_smu); return; } }   // a finalized serial a record may still replay: kept (g_ghost_held counts the ghost ring's holders since main's fa9cfb84)
+    if (!m) { pthread_mutex_unlock(&g_smu); rtrb_del(i); return; }
+    { uintptr_t gk = (uintptr_t)(__bridge void *)m; if (g_ghost_held.n && nvn_hm_get(&g_ghost_held, &gk)) { g_rtr_ghost++; pthread_mutex_unlock(&g_smu); return; } }   // a finalized serial a record may still replay: kept (g_ghost_held counts the ghost ring's holders since main's fa9cfb84)
     for (uint32_t j = 0; j < g_by_serial.cap && nk < 64; j++) if (g_by_serial.vals[j] == (__bridge void *)m) memcpy(&keys[nk++], g_by_serial.keys + (size_t)j * g_by_serial.klen, 8);
     pthread_mutex_unlock(&g_smu);
     if (nk == 64) return;   // more holders than followed: kept
-    for (int j = 0; j < nk; j++) { serial_del(keys[j]); nvn_hm_put(&g_rc_gone, &keys[j], (void *)(uintptr_t)(i + 1)); }
+    for (int j = 0; j < nk; j++) { serial_del(keys[j]); nvn_hm_put(&g_rtr_gone, &keys[j], (void *)(uintptr_t)(i + 1)); }
     pthread_mutex_lock(&g_smu);
     void *old = nvn_hm_del(&g_alias, &e->k); nvn_hm_del(&g_alias_seen, &e->k);
     id o = old ? CFBridgingRelease(old) : nil; if (o && g_alias_set) CFSetRemoveValue(g_alias_set, (__bridge const void *)o);
     pthread_mutex_unlock(&g_smu);
-    if (o && [o conformsToProtocol:@protocol(MTLTexture)]) { RcFree *f = [RcFree new]; f->t = o; f->fence = g_fence + 1; f->frame = atomic_load(&g_cur_frame);
-        if (!g_rc_free) g_rc_free = [NSMutableArray new]; [g_rc_free addObject:f]; g_rc_free_bytes += ((id<MTLTexture>)o).allocatedSize; g_rc_reclaims++; }
-    rcb_del(i);
+    if (o && [o conformsToProtocol:@protocol(MTLTexture)]) { RtrFree *f = [RtrFree new]; f->t = o; f->fence = g_fence + 1; f->frame = atomic_load(&g_cur_frame);
+        if (!g_rtr_free) g_rtr_free = [NSMutableArray new]; [g_rtr_free addObject:f]; g_rtr_free_bytes += ((id<MTLTexture>)o).allocatedSize; g_rtr_reclaims++; }
+    rtrb_del(i);
 }
 // A render pass attaches t (OP_SET_RT): its own coverage restarts at once (written again: never dead, its IDs come back). It covers the entries it overlaps in its pool only when the
 // pass ends (the next OP_SET_RT or the submission's end), and only if the pass's draws and clears covered the whole attachment (viewport ∩ scissor): a partial pass (dynamic resolution
 // into a larger target, atlas tiles) leaves the bytes outside its area as they were, which block-linear layouts make non-contiguous, so it covers nothing
-enum { RC_PEND = 9 };
-static tex_t g_rcp_t[RC_PEND]; static int g_rcp_n; static float g_rc_area[4]; static int g_rc_area_any;   // area: x0, y0, x1, y1 of what the pass drew or cleared
-static uint64_t g_rc_partial, g_rc_full;
-static void rc_cover_others(const tex_t *t) {   // caller holds g_rc_mu
-    int me = rc_get(t); rc_ent *e = &g_rc[me];
+enum { RTR_PEND = 9 };
+static tex_t g_rtrp_t[RTR_PEND]; static int g_rtrp_n; static float g_rtr_area[4]; static int g_rtr_area_any;   // area: x0, y0, x1, y1 of what the pass drew or cleared
+static uint64_t g_rtr_partial, g_rtr_full;
+static void rtr_cover_others(const tex_t *t) {   // caller holds g_rtr_mu
+    int me = rtr_get(t); rtr_ent *e = &g_rtr[me];
     uintptr_t lo = e->lo, hi = e->hi; uint64_t pool = e->k.pool;
-    for (int b = 0; b < g_rcb_n; b++) { int i = g_rcb[b]; rc_ent *u = &g_rc[i]; if (i == me || u->dead || u->k.pool != pool || u->hi <= lo || u->lo >= hi) continue;
-        if (rc_cover(u, lo, hi)) { u->dead = 1; g_rc_deaths++; if (!u->excl) { rc_reclaim(i); b--; } } }   // rcb_del swapped another entry into slot b
+    for (int b = 0; b < g_rtrb_n; b++) { int i = g_rtrb[b]; rtr_ent *u = &g_rtr[i]; if (i == me || u->dead || u->k.pool != pool || u->hi <= lo || u->lo >= hi) continue;
+        if (rtr_cover(u, lo, hi)) { u->dead = 1; g_rtr_deaths++; if (!u->excl) { rtr_reclaim(i); b--; } } }   // rtrb_del swapped another entry into slot b
 }
-static void rc_pass_end(void) {
-    if (!g_rcp_n) return;
-    pthread_mutex_lock(&g_rc_mu);
-    for (int j = 0; j < g_rcp_n; j++) { const tex_t *t = &g_rcp_t[j];
-        int full = g_rc_area_any && g_rc_area[0] <= 0.5f && g_rc_area[1] <= 0.5f && g_rc_area[2] >= (float)t->d.width - 0.5f && g_rc_area[3] >= (float)t->d.height - 0.5f;
-        if (full) { g_rc_full++; rc_cover_others(t); } else g_rc_partial++; }
-    g_rcp_n = 0; g_rc_area_any = 0;
-    pthread_mutex_unlock(&g_rc_mu);
+static void rtr_pass_end(void) {
+    if (!g_rtrp_n) return;
+    pthread_mutex_lock(&g_rtr_mu);
+    for (int j = 0; j < g_rtrp_n; j++) { const tex_t *t = &g_rtrp_t[j];
+        int full = g_rtr_area_any && g_rtr_area[0] <= 0.5f && g_rtr_area[1] <= 0.5f && g_rtr_area[2] >= (float)t->d.width - 0.5f && g_rtr_area[3] >= (float)t->d.height - 0.5f;
+        if (full) { g_rtr_full++; rtr_cover_others(t); } else g_rtr_partial++; }
+    g_rtrp_n = 0; g_rtr_area_any = 0;
+    pthread_mutex_unlock(&g_rtr_mu);
 }
-static void rc_area_add(float x0, float y0, float x1, float y1) {   // a draw's viewport ∩ scissor, or a clear's area, in the pass's pixels
-    if (!g_rcp_n) return;
+static void rtr_area_add(float x0, float y0, float x1, float y1) {   // a draw's viewport ∩ scissor, or a clear's area, in the pass's pixels
+    if (!g_rtrp_n) return;
     if (x0 > x1) { float x = x0; x0 = x1; x1 = x; } if (y0 > y1) { float y = y0; y0 = y1; y1 = y; }
-    if (!g_rc_area_any) { g_rc_area[0] = x0; g_rc_area[1] = y0; g_rc_area[2] = x1; g_rc_area[3] = y1; g_rc_area_any = 1; return; }
-    if (x0 < g_rc_area[0]) g_rc_area[0] = x0; if (y0 < g_rc_area[1]) g_rc_area[1] = y0; if (x1 > g_rc_area[2]) g_rc_area[2] = x1; if (y1 > g_rc_area[3]) g_rc_area[3] = y1;   // the bounding box: separate rectangles that leave a hole count as covering it (rare for full-target passes)
+    if (!g_rtr_area_any) { g_rtr_area[0] = x0; g_rtr_area[1] = y0; g_rtr_area[2] = x1; g_rtr_area[3] = y1; g_rtr_area_any = 1; return; }
+    if (x0 < g_rtr_area[0]) g_rtr_area[0] = x0; if (y0 < g_rtr_area[1]) g_rtr_area[1] = y0; if (x1 > g_rtr_area[2]) g_rtr_area[2] = x1; if (y1 > g_rtr_area[3]) g_rtr_area[3] = y1;   // the bounding box: separate rectangles that leave a hole count as covering it (rare for full-target passes)
 }
-static void rc_write(const tex_t *t) {
-    if (!t || !t->serial || !t->mem || !t->L.size || !rc_on()) return;
-    pthread_mutex_lock(&g_rc_mu);
-    int was_gone = nvn_hm_del(&g_rc_gone, &t->serial) != NULL;
-    int me = rc_get(t); rc_ent *e = &g_rc[me]; e->ncov = 0; e->dead = 0; e->over = 0; e->used = 1; e->dlast = 0; rcb_add(me);
-    if (g_rcp_n < RC_PEND) g_rcp_t[g_rcp_n++] = *t;
-    pthread_mutex_unlock(&g_rc_mu);
+static void rtr_write(const tex_t *t) {
+    if (!t || !t->serial || !t->mem || !t->L.size || !rtr_on()) return;
+    pthread_mutex_lock(&g_rtr_mu);
+    int was_gone = nvn_hm_del(&g_rtr_gone, &t->serial) != NULL;
+    int me = rtr_get(t); rtr_ent *e = &g_rtr[me]; e->ncov = 0; e->dead = 0; e->over = 0; e->used = 1; e->dlast = 0; rtrb_add(me);
+    if (g_rtrp_n < RTR_PEND) g_rtrp_t[g_rtrp_n++] = *t;
+    pthread_mutex_unlock(&g_rtr_mu);
     if (was_gone) ser_note(t->serial);   // its IDs are taken again (pool tables, tex_by_id), now with a texture
 }
-static uint64_t g_rc_dead_reads, g_rc_hist_n, g_rc_hist_b;
-int rc_dead_read(uint64_t serial) {
-    pthread_mutex_lock(&g_rc_mu); uintptr_t ix = (uintptr_t)nvn_hm_get(&g_rc_gone, &serial); int r = ix != 0;
-    if (r) { g_rc_dead_reads++; if (ix <= (uintptr_t)g_rc_n) { rc_ent *e = &g_rc[ix - 1]; uint64_t f = atomic_load(&g_cur_frame); e->dreads++; if (e->dlast != f + 1) { if (!e->dlast) e->dnext++; e->dframes++; e->dlast = f + 1; }
-        if (e->dnext > 4 && !e->excl) { e->excl = 1; g_rc_hist_n++; g_rc_hist_b += e->hi - e->lo; } } }   // read before its next write after more than 4 deaths: history-like (luminance, bloom chains), kept from now on
-    pthread_mutex_unlock(&g_rc_mu); return r;
+static uint64_t g_rtr_dead_reads, g_rtr_hist_n, g_rtr_hist_b;
+int rtr_dead_read(uint64_t serial) {
+    pthread_mutex_lock(&g_rtr_mu); uintptr_t ix = (uintptr_t)nvn_hm_get(&g_rtr_gone, &serial); int r = ix != 0;
+    if (r) { g_rtr_dead_reads++; if (ix <= (uintptr_t)g_rtr_n) { rtr_ent *e = &g_rtr[ix - 1]; uint64_t f = atomic_load(&g_cur_frame); e->dreads++; if (e->dlast != f + 1) { if (!e->dlast) e->dnext++; e->dframes++; e->dlast = f + 1; }
+        if (e->dnext > 4 && !e->excl) { e->excl = 1; g_rtr_hist_n++; g_rtr_hist_b += e->hi - e->lo; } } }   // read before its next write after more than 4 deaths: history-like (luminance, bloom chains), kept from now on
+    pthread_mutex_unlock(&g_rtr_mu); return r;
 }
-static void rc_dead_dump(void) {
+static void rtr_dead_dump(void) {
     enum { N = 12 }; int top[N]; int nt = 0;
-    pthread_mutex_lock(&g_rc_mu);
-    for (int i = 0; i < g_rc_n; i++) { if (!g_rc[i].dreads) continue; int j = nt < N ? nt++ : N - 1; if (j == N - 1 && nt == N && g_rc[top[j]].dreads >= g_rc[i].dreads) continue; top[j] = i;
-        for (; j > 0 && g_rc[top[j]].dreads > g_rc[top[j - 1]].dreads; j--) { int x = top[j]; top[j] = top[j - 1]; top[j - 1] = x; } }
+    pthread_mutex_lock(&g_rtr_mu);
+    for (int i = 0; i < g_rtr_n; i++) { if (!g_rtr[i].dreads) continue; int j = nt < N ? nt++ : N - 1; if (j == N - 1 && nt == N && g_rtr[top[j]].dreads >= g_rtr[i].dreads) continue; top[j] = i;
+        for (; j > 0 && g_rtr[top[j]].dreads > g_rtr[top[j - 1]].dreads; j--) { int x = top[j]; top[j] = top[j - 1]; top[j - 1] = x; } }
     char line[2400]; int L = 0;
-    for (int j = 0; j < nt && L < (int)sizeof line - 120; j++) { rc_ent *e = &g_rc[top[j]];
+    for (int j = 0; j < nt && L < (int)sizeof line - 120; j++) { rtr_ent *e = &g_rtr[top[j]];
         L += snprintf(line + L, sizeof line - L, " [%ux%u f%d t%d off %#llx: %llu reads in %llu frames, %llu deaths read before a write]", e->k.d.width, e->k.d.height, e->k.d.format, e->k.d.target, (unsigned long long)e->k.off,
                       (unsigned long long)e->dreads, (unsigned long long)e->dframes, (unsigned long long)e->dnext); }
-    pthread_mutex_unlock(&g_rc_mu);
+    pthread_mutex_unlock(&g_rtr_mu);
     MLOG("DM_NVN_RT_RECLAIM: most read while dead:%s", line);
 }
-static void rc_excl(const tex_t *t) {   // a copy, clear or readback touched t: never reclaimed
-    if (!t || !t->serial || !rc_on()) return;
-    pthread_mutex_lock(&g_rc_mu); int i = rc_get(t); if (!g_rc[i].excl) { g_rc[i].excl = 1; g_rc_excl_n++; } pthread_mutex_unlock(&g_rc_mu);
+static void rtr_excl(const tex_t *t) {   // a copy, clear or readback touched t: never reclaimed
+    if (!t || !t->serial || !rtr_on()) return;
+    pthread_mutex_lock(&g_rtr_mu); int i = rtr_get(t); if (!g_rtr[i].excl) { g_rtr[i].excl = 1; g_rtr_excl_n++; } pthread_mutex_unlock(&g_rtr_mu);
 }
-static void rc_excl_range(uint64_t a, uint64_t n) {   // a pool copy over [a, a + n)
-    if (!n || g_rc_on_ != 1) return;
-    pthread_mutex_lock(&g_rc_mu);
-    for (int b = 0; b < g_rcb_n; b++) { rc_ent *u = &g_rc[g_rcb[b]]; if (!u->excl && u->lo < a + n && u->hi > a) { u->excl = 1; g_rc_excl_n++; } }
-    pthread_mutex_unlock(&g_rc_mu);
+static void rtr_excl_range(uint64_t a, uint64_t n) {   // a pool copy over [a, a + n)
+    if (!n || g_rtr_on_ != 1) return;
+    pthread_mutex_lock(&g_rtr_mu);
+    for (int b = 0; b < g_rtrb_n; b++) { rtr_ent *u = &g_rtr[g_rtrb[b]]; if (!u->excl && u->lo < a + n && u->hi > a) { u->excl = 1; g_rtr_excl_n++; } }
+    pthread_mutex_unlock(&g_rtr_mu);
 }
 // The creation of a shared texture: one of the free list's of the same descriptor whose last use the GPU has finished, or nil
-static id<MTLTexture> rc_take(MTLTextureDescriptor *d, const tex_t *t) {
-    if (g_rc_on_ != 1) return nil;
-    pthread_mutex_lock(&g_rc_mu);
-    if (nvn_hm_del(&g_rc_gone, &t->serial)) { g_rc_again++; g_rc_sampled++; }   // resolved again before any render pass wrote it: sampled (or copied) first
+static id<MTLTexture> rtr_take(MTLTextureDescriptor *d, const tex_t *t) {
+    if (g_rtr_on_ != 1) return nil;
+    pthread_mutex_lock(&g_rtr_mu);
+    if (nvn_hm_del(&g_rtr_gone, &t->serial)) { g_rtr_again++; g_rtr_sampled++; }   // resolved again before any render pass wrote it: sampled (or copied) first
     id<MTLTexture> r = nil; uint64_t done = atomic_load(&g_done);
-    for (NSInteger j = (NSInteger)g_rc_free.count - 1; j >= 0 && !r; j--) { RcFree *f = g_rc_free[j]; id<MTLTexture> x = f->t;
+    for (NSInteger j = (NSInteger)g_rtr_free.count - 1; j >= 0 && !r; j--) { RtrFree *f = g_rtr_free[j]; id<MTLTexture> x = f->t;
         if (f->fence > done || x.width != d.width || x.height != d.height || x.depth != d.depth || x.pixelFormat != d.pixelFormat || x.textureType != d.textureType || x.mipmapLevelCount != d.mipmapLevelCount
             || x.sampleCount != d.sampleCount || x.arrayLength != d.arrayLength || x.usage != d.usage || x.storageMode != d.storageMode || x.allowGPUOptimizedContents != d.allowGPUOptimizedContents
             || memcmp(&(MTLTextureSwizzleChannels){x.swizzle.red, x.swizzle.green, x.swizzle.blue, x.swizzle.alpha}, &(MTLTextureSwizzleChannels){d.swizzle.red, d.swizzle.green, d.swizzle.blue, d.swizzle.alpha}, sizeof(MTLTextureSwizzleChannels))) continue;
-        r = x; g_rc_free_bytes -= x.allocatedSize; [g_rc_free removeObjectAtIndex:(NSUInteger)j]; g_rc_reuses++; }
-    pthread_mutex_unlock(&g_rc_mu);
+        r = x; g_rtr_free_bytes -= x.allocatedSize; [g_rtr_free removeObjectAtIndex:(NSUInteger)j]; g_rtr_reuses++; }
+    pthread_mutex_unlock(&g_rtr_mu);
     return r;
 }
 // After each submission: free-list textures unused for 15 frames go; counters every 150 frames
-void rc_tick_(void) {
-    if (g_rc_on_ != 1) return;
-    rc_pass_end();
+void rtr_tick_(void) {
+    if (g_rtr_on_ != 1) return;
+    rtr_pass_end();
     static uint64_t last, lines; uint64_t f = atomic_load(&g_cur_frame);
     if (f == last) return;
     last = f;
-    pthread_mutex_lock(&g_rc_mu);
-    for (NSInteger j = (NSInteger)g_rc_free.count - 1; j >= 0; j--) { RcFree *x = g_rc_free[j]; if (f - x->frame >= 15) { g_rc_free_bytes -= x->t.allocatedSize; defer_obj_release(x->t); [g_rc_free removeObjectAtIndex:(NSUInteger)j]; g_rc_trims++; } }
-    unsigned long nfree = (unsigned long)g_rc_free.count; uint64_t fb = g_rc_free_bytes;
-    pthread_mutex_unlock(&g_rc_mu);
-    if (f % 600 == 0 && lines < 200) rc_dead_dump();
+    pthread_mutex_lock(&g_rtr_mu);
+    for (NSInteger j = (NSInteger)g_rtr_free.count - 1; j >= 0; j--) { RtrFree *x = g_rtr_free[j]; if (f - x->frame >= 15) { g_rtr_free_bytes -= x->t.allocatedSize; defer_obj_release(x->t); [g_rtr_free removeObjectAtIndex:(NSUInteger)j]; g_rtr_trims++; } }
+    unsigned long nfree = (unsigned long)g_rtr_free.count; uint64_t fb = g_rtr_free_bytes;
+    pthread_mutex_unlock(&g_rtr_mu);
+    if (f % 600 == 0 && lines < 200) rtr_dead_dump();
     if (f % 150 == 0 && lines++ < 200) MLOG("DM_NVN_RT_RECLAIM: frame %llu: deaths %llu, reclaimed %llu, reused %llu, trimmed %llu, kept for a ghost %llu, resolved again %llu (sampled before written %llu), ID reads while dead %llu, excluded %llu (history-like %llu / %llu MB); passes full / partial %llu / %llu; free list %lu / %llu MB; tracked %d, scanned %d",
-        (unsigned long long)f, (unsigned long long)g_rc_deaths, (unsigned long long)g_rc_reclaims, (unsigned long long)g_rc_reuses, (unsigned long long)g_rc_trims, (unsigned long long)g_rc_ghost, (unsigned long long)g_rc_again,
-        (unsigned long long)g_rc_sampled, (unsigned long long)g_rc_dead_reads, (unsigned long long)g_rc_excl_n, (unsigned long long)g_rc_hist_n, (unsigned long long)(g_rc_hist_b >> 20), (unsigned long long)g_rc_full, (unsigned long long)g_rc_partial, nfree, (unsigned long long)(fb >> 20), g_rc_n, g_rcb_n);
+        (unsigned long long)f, (unsigned long long)g_rtr_deaths, (unsigned long long)g_rtr_reclaims, (unsigned long long)g_rtr_reuses, (unsigned long long)g_rtr_trims, (unsigned long long)g_rtr_ghost, (unsigned long long)g_rtr_again,
+        (unsigned long long)g_rtr_sampled, (unsigned long long)g_rtr_dead_reads, (unsigned long long)g_rtr_excl_n, (unsigned long long)g_rtr_hist_n, (unsigned long long)(g_rtr_hist_b >> 20), (unsigned long long)g_rtr_full, (unsigned long long)g_rtr_partial, nfree, (unsigned long long)(fb >> 20), g_rtr_n, g_rtrb_n);
 }
 static NvPkg *pkg_shared(const tex_t *t) {
     alias_key k = tex_alias_key(t); NvPkg *pk = nil;
@@ -4500,9 +4500,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         if (!d) return nil;
         mt = image_texture(t, d);
         int filled = 0;
-        if (!mt && (mt = pool_heap_texture(t, d))) rc_excl(t);   // placed at its pool offset in the pool's heap: never reclaimed (DM_NVN_RT_RECLAIM's free list hands a texture to another offset)
-        if (!mt) { mt = rc_take(d, t); if (!mt) mt = [g_dev newTextureWithDescriptor:d];   // rc_take: DM_NVN_RT_RECLAIM's free list
-            if (mt) { res_add(mt); if (!(filled = tex_init_fill(t, mt))) tex_zero_fill(mt); else rc_excl(t); } }
+        if (!mt && (mt = pool_heap_texture(t, d))) rtr_excl(t);   // placed at its pool offset in the pool's heap: never reclaimed (DM_NVN_RT_RECLAIM's free list hands a texture to another offset)
+        if (!mt) { mt = rtr_take(d, t); if (!mt) mt = [g_dev newTextureWithDescriptor:d];   // rtr_take: DM_NVN_RT_RECLAIM's free list
+            if (mt) { res_add(mt); if (!(filled = tex_init_fill(t, mt))) tex_zero_fill(mt); else rtr_excl(t); } }
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
     }
     if (mt.allocatedSize >= (256u << 20)) { static int nb; if (nb++ < 20)   // the textures that take most of the GPU's memory (a GPU out-of-memory error says nothing of which)
@@ -6394,8 +6394,8 @@ void mtl_set_origin_lower_left(int on) { if (atomic_exchange(&g_origin_ll, on) !
 static int g_queue_origin_ll;   // SET_WINDOW_ORIGIN's raster flip is queue state, independent of later device-origin changes.
 void mtl_set_queue_origin_lower_left(int on) { g_queue_origin_ll = on != 0; }
 void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
-int rc_dead_read(uint64_t serial);   // DM_NVN_RT_RECLAIM: a reclaimed serial's ID reads as an empty slot until a render pass writes it again (its bytes belong to the texture that overwrote it)
-static id<MTLTexture> treg_tex(const treg_t *r) { return r->gone ? tex_made(&r->t) : (g_rc_on_ == 1 && rc_dead_read(r->t.serial)) ? nil : tex_mtl(&r->t); }   // Caller holds g_rmu
+int rtr_dead_read(uint64_t serial);   // DM_NVN_RT_RECLAIM: a reclaimed serial's ID reads as an empty slot until a render pass writes it again (its bytes belong to the texture that overwrote it)
+static id<MTLTexture> treg_tex(const treg_t *r) { return r->gone ? tex_made(&r->t) : (g_rtr_on_ == 1 && rtr_dead_read(r->t.serial)) ? nil : tex_mtl(&r->t); }   // Caller holds g_rmu
 // The upload stamp of the packaged texture an ID's view was made from (tex_by_id's guest-write shortcut); none for sparse ones (their page table changes too) or another base. Caller holds g_rmu
 static void treg_pkg_stamp(treg_t *rp, id<MTLTexture> base) {
     rp->view_span = NULL; if (!rp->view_pkg) return;
@@ -12741,11 +12741,11 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_mdxc.next = NULL;
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
-    if (g_rcp_n) {   // DM_NVN_RT_RECLAIM: the area this draw can write (viewport 0 ∩ scissor; no viewport set: the whole target)
+    if (g_rtrp_n) {   // DM_NVN_RT_RECLAIM: the area this draw can write (viewport 0 ∩ scissor; no viewport set: the whole target)
         float x0 = -1e30f, y0 = -1e30f, x1 = 1e30f, y1 = 1e30f;
         if (S.has_vp) { x0 = S.vp[0][0]; y0 = S.vp[0][1]; x1 = S.vp[0][0] + S.vp[0][2]; y1 = S.vp[0][1] + S.vp[0][3]; if (x0 > x1) { float x = x0; x0 = x1; x1 = x; } if (y0 > y1) { float y = y0; y0 = y1; y1 = y; } }
         if (R.has_sc) { if (R.sc.x > x0) x0 = R.sc.x; if (R.sc.y > y0) y0 = R.sc.y; if (R.sc.x + R.sc.w < x1) x1 = R.sc.x + R.sc.w; if (R.sc.y + R.sc.h < y1) y1 = R.sc.y + R.sc.h; }
-        if (x1 > x0 && y1 > y0) rc_area_add(x0, y0, x1, y1);
+        if (x1 > x0 && y1 > y0) rtr_area_add(x0, y0, x1, y1);
     }
     image_prepare(pr, 0x1f);
     draw_gs_check(pr);   // a geometry stage left with no function (see prog_fold_gs)
@@ -13334,7 +13334,7 @@ static int rb_swap_gpu(uint64_t src, size_t row, size_t img, uint64_t dst, size_
 // texture on a pool's buffer, which holds the guest's bits (linear and buffer textures)
 static int rb_copy_shift(const tex_t *t, id<MTLTexture> mt) { return mt.buffer ? 0 : rb_packed_shift(t->d.format); }
 static void copy_t2b(const p_copy_b2t *c, uint32_t size) {
-    if (g_rc_on_ == 1) rc_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
+    if (g_rtr_on_ == 1) rtr_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
     rp_flush();   // Materialize pending clears before reading, matching copy_t2t.
     g_wr_epoch++; g_mdx_epoch++;
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "texture-to-buffer copy");
@@ -13524,7 +13524,7 @@ static void mirror_rb_land(void *p) {   // the submission's completion handler
     free(m);
 }
 static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
-    if (g_rc_on_ == 1) rc_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
+    if (g_rtr_on_ == 1) rtr_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
@@ -13788,7 +13788,7 @@ static int bc_alias_copy(const p_copy_t2t *c, id<MTLTexture> s, unsigned sl, uns
 }
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
 static void copy_t2t(const p_copy_t2t *c) {
-    if (g_rc_on_ == 1) rc_excl(c->dst);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
+    if (g_rtr_on_ == 1) rtr_excl(c->dst);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "texture copy source");
     rp_flush();   // Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
     if (c->dst) zskip_del(c->dst->serial);
@@ -14004,7 +14004,7 @@ static unsigned mtl_pf_chmask(MTLPixelFormat pf) {
 // View with changed format: clear on that view. Partial colour regions / channel masks use a triangle and preserve everything else.
 static void clear_tex_tri(id<MTLTexture> t, unsigned lv, unsigned l0, const p_clear_tex *c);
 static void clear_tex(const p_clear_tex *c) {
-    if (g_rc_on_ == 1) rc_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
+    if (g_rtr_on_ == 1) rtr_excl(c->tex);   // DM_NVN_RT_RECLAIM: a copy, clear or readback touched it
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex); sparse_gpu_wrote(c->tex);
     PD("X ser=%llu view format %#x region %d,%d,%d %dx%dx%d mask %#x %s %g,%g,%g,%g", c->tex ? c->tex->serial : 0ull, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
@@ -14326,14 +14326,14 @@ void mtl_exec(const uint8_t *p) {
                 break; }
             case OP_CLEAR_BUF: { const p_clear_buf *cb = a; mtl_sub_fill(cb->addr, cb->size, cb->value); break; }
             case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
-                PD("Y copy_b2b cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n); if (g_rc_on_ == 1) { rc_excl_range(s_, n); rc_excl_range(d, n); } mtl_sub_copy(s_, d, n); break; }
+                PD("Y copy_b2b cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n); if (g_rtr_on_ == 1) { rtr_excl_range(s_, n); rtr_excl_range(d, n); } mtl_sub_copy(s_, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
                 if (p == g_mdx_stop) { g_mdx_epoch++; g_mdx_stop = NULL; }   // it writes a record or count that masked copies were made of (mdx_run)
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu f=%g,%g,%g,%g", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n,
                    n >= 4 ? ((const float *)((const uint8_t *)a + 16))[0] : 0.f, n >= 8 ? ((const float *)((const uint8_t *)a + 16))[1] : 0.f, n >= 12 ? ((const float *)((const uint8_t *)a + 16))[2] : 0.f, n >= 16 ? ((const float *)((const uint8_t *)a + 16))[3] : 0.f); mtl_sub_update((const uint8_t *)a + 16, d, n); break; }
             case OP_SET_RT: {
                 const p_set_rt *r = a;
-                if (g_rc_on_ == 1) { rc_pass_end(); for (int i = 0; i < r->n && i < 8; i++) rc_write(r->color[i]); rc_write(r->depth); } else if (g_rc_on_) { for (int i = 0; i < r->n && i < 8; i++) rc_write(r->color[i]); rc_write(r->depth); }   // DM_NVN_RT_RECLAIM
+                if (g_rtr_on_ == 1) { rtr_pass_end(); for (int i = 0; i < r->n && i < 8; i++) rtr_write(r->color[i]); rtr_write(r->depth); } else if (g_rtr_on_) { for (int i = 0; i < r->n && i < 8; i++) rtr_write(r->color[i]); rtr_write(r->depth); }   // DM_NVN_RT_RECLAIM
                 if (defer_begin_q(p)) break;
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
                 if (g_enc && !pend && R.has_rt && tbdr_on() && rt_range_same(&R.rt,r)) {
@@ -14350,7 +14350,7 @@ void mtl_exec(const uint8_t *p) {
             }
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
-                if (g_rcp_n) { if (R.has_sc) rc_area_add(R.sc.x, R.sc.y, R.sc.x + R.sc.w, R.sc.y + R.sc.h); else rc_area_add(-1e30f, -1e30f, 1e30f, 1e30f); }   // DM_NVN_RT_RECLAIM: a clear writes its scissor
+                if (g_rtrp_n) { if (R.has_sc) rtr_area_add(R.sc.x, R.sc.y, R.sc.x + R.sc.w, R.sc.y + R.sc.h); else rtr_area_add(-1e30f, -1e30f, 1e30f, 1e30f); }   // DM_NVN_RT_RECLAIM: a clear writes its scissor
                 if (g_rc_skip) { PD("c %llu color clear skipped by conditional rendering slot%d", g_stat_pass, c->index); break; }
                 // A scissored clear to 0 outside a pass with all channels (SMBW clears pyramid levels as sub-rectangles of 480×272 and other targets): copy from the zero buffer into the scissor rectangle in the replay stream
                 if (!g_enc && c->mask == 0xf && !c->rgba[0] && !c->rgba[1] && !c->rgba[2] && !c->rgba[3] && R.has_sc && c->index >= 0 && c->index < R.rt.n && R.rt.color[c->index]
@@ -14367,7 +14367,7 @@ void mtl_exec(const uint8_t *p) {
                 break;
             }
             case OP_CLEAR_DS: {
-                if (g_rcp_n) { if (R.has_sc) rc_area_add(R.sc.x, R.sc.y, R.sc.x + R.sc.w, R.sc.y + R.sc.h); else rc_area_add(-1e30f, -1e30f, 1e30f, 1e30f); }   // DM_NVN_RT_RECLAIM: a clear writes its scissor
+                if (g_rtrp_n) { if (R.has_sc) rtr_area_add(R.sc.x, R.sc.y, R.sc.x + R.sc.w, R.sc.y + R.sc.h); else rtr_area_add(-1e30f, -1e30f, 1e30f, 1e30f); }   // DM_NVN_RT_RECLAIM: a clear writes its scissor
                 const p_clear_ds *c = a;
                 if (g_rc_skip) { PD("c %llu depth-stencil clear skipped by conditional rendering", g_stat_pass); break; }
                 if (g_rt_merged || g_sm_pass) rp_end();
