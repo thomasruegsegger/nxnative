@@ -69,7 +69,7 @@ To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the g
 
 Install the IPA on your iPhone or iPad with a sideloading tool such as AltStore, Sideloadly or LiveContainer. If your tool offers **Increased Memory Limit**, turn it on: the bigger games need it.
 
-Game too big to install? Build again with `--romfs separate`, and run the command the script prints once to copy the game files to your phone ([Quick reinstalls](docs/development.md#quick-reinstalls)).
+Game too big to install? Build again with `--romfs separate`, and run the command the script prints once to copy the game files to your phone ([Quick reinstalls](docs/development.md#quick-reinstalls)). With AltServer, also add `--shader-files`: it cannot install a file of 2 GiB or more.
 
 Controls, saves and settings: [Playing](docs/playing.md).
 
@@ -353,6 +353,11 @@ Under a game, "60 fps with 1.2.0" means it runs at 60 fps (30 on the console) wi
 <td align="center" valign="top" width="33%"><img src="docs/images/minecraft-dungeons-ii.jpg" width="256" alt="Minecraft Dungeons II"><br><small><b><a href="dm/games/0100A7C01B792000/README.md">Minecraft Dungeons II</a></b></small></td>
 <td align="center" valign="top" width="33%"><img src="docs/images/sonic-superstars.jpg" width="256" alt="Sonic Superstars"><br><small><b><a href="dm/games/01008F701C074000/README.md">Sonic Superstars</a></b></small></td>
 <td align="center" valign="top" width="33%"><img src="docs/images/dragon-ball-sparking-zero.jpg" width="256" alt="DRAGON BALL: Sparking! ZERO"><br><small><b><a href="dm/games/010035F022078000/README.md">DRAGON BALL: Sparking! ZERO</a></b><br>60 fps, up to 120 on the Mac</small></td>
+</tr>
+<tr>
+<td align="center" valign="top" width="33%"><img src="docs/images/romance-of-the-three-kingdoms-xiv.jpg" width="256" alt="ROMANCE OF THE THREE KINGDOMS XIV"><br><small><b><a href="dm/games/0100ED7012DB2000/README.md">ROMANCE OF THE THREE KINGDOMS XIV</a></b></small></td>
+<td align="center" valign="top" width="33%"><img src="docs/images/the-rogue-prince-of-persia.jpg" width="256" alt="The Rogue Prince of Persia"><br><small><b><a href="dm/games/01008D9022462000/README.md">The Rogue Prince of Persia</a></b><br>60 fps, up to 120 on the Mac</small></td>
+<td></td>
 </tr>
 </table>
 <!-- end of gallery -->
