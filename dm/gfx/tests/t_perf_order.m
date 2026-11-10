@@ -150,7 +150,7 @@ static void hoists(id<MTLLibrary> lib) {
         if(hazard) { uint32_t bits=~0u; emit(&c,OP_BARRIER,&bits,sizeof bits); }
         p_dispatch d={.x=1,.y=1,.z=1}; emit(&c,OP_DISPATCH,&d,sizeof d); triangle(&c);
         uint64_t before=g_csh_moved; execute(&c);
-        CHECK(hazard?"explicit game barrier prevents hoist":"independent dispatch hoisted once",g_csh_moved-before==(cshoist_on() && !hazard));
+        CHECK(hazard?"a game barrier after draws that write no memory does not stop the hoist (DM_NVN_CSH_BARRIER=0: it does)":"independent dispatch hoisted once",g_csh_moved-before==(cshoist_on() && (!hazard || csh_bar_pass())));
         CHECK("compute writes expected shared memory",*(uint32_t *)mem==73);
     }
     // Drive the production scanner with stencil writes and a stencil-only read.

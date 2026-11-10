@@ -4467,7 +4467,8 @@ static const uint8_t *srgb_twins(uint32_t f) {
     });
     return f < 256 ? tw[f] : tw[0];
 }
-// GPU-only pools as Metal memory (DM_NVN_POOL_HEAP=0 turns it off). In a CPU_NO_ACCESS pool only the GPU gives the storage meaning, and engines place their transient render
+// GPU-only pools as Metal memory (DM_NVN_POOL_HEAP=1 turns it on; off by default since upstream's rh_texture, which it would pre-empt: the game's dynamic resolution keeps live
+// targets in the part of a full-size target its current size leaves unused, so pool-offset placement corrupted the picture when the resolution moved). In a CPU_NO_ACCESS pool only the GPU gives the storage meaning, and engines place their transient render
 // targets over each other there, as a frame graph does: NVN gives them one memory, the host gave each texture description a Metal allocation of its own. Ocarina of Time's 305 MB
 // render target pool held 888 shared textures, 2,412 MB as Metal textures (3,001 MB of textures in 804 MB of such pools), past what a 16 GB Mac's working set can hold beside the
 // rest. Its render targets (COMPRESSIBLE textures) now go into one placement heap per pool, each at its pool offset scaled by POOL_HEAP_SCALE (a Metal texture can be a little larger
@@ -4484,7 +4485,7 @@ enum { POOL_HEAP_GRAIN = 64 << 10 };
 @end
 static nvn_hmap g_pool_heap = {.klen = sizeof(void *)};   // pool object → NvPoolHeap (retained), under g_smu; dropped with the pool (mtl_alias_drop_pool)
 static id<MTLTexture> pool_heap_texture(const tex_t *t, MTLTextureDescriptor *d) {
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_POOL_HEAP"); on = !e || atoi(e); }
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_POOL_HEAP"); on = e && atoi(e); }
     const pool_t *p = t->pool;
     if (!on || !p || !p->mem || !(p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || (p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || nvn_sparse_pool(p)) return nil;
     if (p->size > POOL_HEAP_MAX || !t->L.size || t->off < 0 || (uint64_t)t->off + t->L.size > p->size || d.storageMode != MTLStorageModePrivate) return nil;
@@ -4667,7 +4668,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
         mt = image_texture(t, d);
         int filled = 0;
         if (!mt && (mt = pool_heap_texture(t, d))) rtr_excl(t);   // placed at its pool offset in the pool's heap: never reclaimed (DM_NVN_RT_RECLAIM's free list hands a texture to another offset)
-        if (!mt) { if ((mt = rh_texture(t, d))) rtr_excl(t);   // a recycled heap of its own (rh_texture, with DM_NVN_POOL_HEAP=0 or a pool past its limit): its heap goes back to rh's list, not DM_NVN_RT_RECLAIM's
+        if (!mt) { if ((mt = rh_texture(t, d))) rtr_excl(t);   // a recycled heap of its own (rh_texture, by default; with DM_NVN_POOL_HEAP=1 for a pool past its limit): its heap goes back to rh's list, not DM_NVN_RT_RECLAIM's
             else { mt = rtr_take(d, t); if (!mt) mt = [g_dev newTextureWithDescriptor:d]; }   // rtr_take: DM_NVN_RT_RECLAIM's free list
             if (mt) { res_add(mt); if (!(filled = tex_init_fill(t, mt))) tex_zero_fill(mt); else rtr_excl(t); } }
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
