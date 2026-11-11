@@ -27,8 +27,20 @@ static inline int dm_host_thread_join(pthread_t thread, void **result) {
     return r;
 }
 
-// The message and its newline under one stream lock: written apart, another thread's line could land between them and two messages share a log line
-#define LOG(...) do { flockfile(stderr); fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); funlockfile(stderr); } while (0)
+// One log line: the message and its newline under one stream lock (written apart, another thread's line could land between them and two messages share a log line).
+// The host's dm_log (hle_bigstack.c) writes it on the thread's big host stack when the caller is on a guest stack: formatting one line takes about 2.7 KB of stack, and a take-over
+// runs on the stack of the game thread that calls it, which can have less left (memory.md, Log lines on small guest stacks). The definition here is a weak one that writes on the
+// caller's stack, for the programs that do not link hle_bigstack.c (unit tests, whose stacks are host stacks); the host's replaces it at link time
+__attribute__((format(printf, 1, 2))) void dm_log(const char *fmt, ...);
+#ifndef DM_LOG_IMPL
+#include <stdarg.h>
+__attribute__((weak)) void dm_log(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    flockfile(stderr); vfprintf(stderr, fmt, ap); fputc('\n', stderr); funlockfile(stderr);
+    va_end(ap);
+}
+#endif
+#define LOG(...) dm_log("[dm] " __VA_ARGS__)
 #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
 typedef struct { uint32_t st_name; uint8_t st_info, st_other; uint16_t st_shndx; uint64_t st_value, st_size; } Elf64_Sym;
@@ -62,6 +74,7 @@ typedef struct {
     uint64_t unity_qs_ptr;     // Unity's QualitySettings (main's offset of the global pointer); the current level's vSyncCount, an int32, is at
     uint32_t unity_qs_idx, unity_qs_arr, unity_qs_size, unity_qs_vsync;   // [obj + arr] + (int32)[obj + idx] * size + vsync; 0 = none
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
+    uint32_t render_scale_max; // a render-scale stub's largest scale (the fixups table's RENDER_SCALE, patch_nso.py): DM_RENDER_SCALE is held to it; 0 = no such stub
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none

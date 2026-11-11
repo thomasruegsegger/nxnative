@@ -720,6 +720,75 @@ def pkz_shaders(path, rel, ents, out):
             if len(d) != usz: red(f'/{rel}/{name}: {len(d)} bytes decoded, the entry says {usz}')
             scan_blob(d, f'/{rel}/{name}', out)
 
+RPF6, RGXD = b'RPF6', b'rgxd'
+def rpf_jobs(files, mains, parts=64):
+    """Every file of every Rockstar RPF6 archive in ranges of about equal stored length (Red Dead Redemption: 134 archives, 11 GB; its shaders are the .nvn effects in shaders.rpf, but no
+    file name is relied on). The entry and name tables are AES encrypted with a key in main (rpf6.py find_key): the first main that opens the first archive gives it.
+    → ([(path, rel, (RPF6, key, entries)), …], the RPF6 paths)"""
+    import rpf6
+    rp = [(p, r) for p, r in files if rpf6.header(p) is not None]
+    if not rp: return [], set()
+    key = next((k for m in mains if (k := rpf6.find_key(m, rp[0][0])) is not None), None)
+    if key is None: red(f'/{rp[0][1]}: an encrypted RPF6 archive, and no 32-byte window of main decrypts its first entry to the root directory')
+    arcs = [(p, r, rpf6.Rpf(p, key).files) for p, r in rp]
+    jobs, step = [], max(1, sum(e[2] for _, _, es in arcs for e in es) / parts)
+    for p, r, es in arcs:
+        cur, size = [], 0
+        for e in es:
+            cur.append(e); size += e[2]
+            if size >= step: jobs.append((p, r, (RPF6, key, tuple(cur)))); cur, size = [], 0
+        if cur: jobs.append((p, r, (RPF6, key, tuple(cur))))
+    return jobs, {p for p, _ in rp}
+
+def rpf_shaders(path, rel, key, ents, out):
+    """A range of RPF6 files (rpf_jobs), each zstd-decoded and scanned like a loose file"""
+    import rpf6
+    r = rpf6.Rpf.__new__(rpf6.Rpf); r.path, r.key = path, key   # the entries came with the job; only read() is needed
+    z = zstd_mod()
+    with open(path, 'rb') as f:
+        for e in ents: scan_blob(r.read(f, e, z), f'/{rel}/{e[0]}', out)
+
+def rgxd_shaders(d, label):
+    """A RAGE effect ('rgxd', Red Dead Redemption's .nvn files in shaders.rpf: 131 effects, 3,413 shaders, 2,089 vertex and 1,324 pixel): after the effect's parameter names, each shader is a
+    record {u32 length, u32 0x19866891 (GLSLC's magic), u32 code length, u32 control length}, then the code area, then the control section. The records are packed (not 4-aligned).
+    919 of the 3,413 control sections are 12·n bytes longer than their own length (control +0x20, n = 1…11); the extra bytes stay with the section (ctl_len keys on its own length).
+    The first word is not the record's own length (0x2df8 for a 0x500 + 0x880 shader); it is not needed to find the shaders"""
+    out, n = [], d.count(CTL_MAGIC)
+    for m in re.finditer(b'\x91\x68\x86\x19', d):
+        h = m.start() - 4
+        if h < 0 or h + 16 > len(d): continue
+        _, _, nk, nc = struct.unpack_from('<4I', d, h)
+        if h + 16 + nk + nc > len(d): continue
+        code, ctl = d[h + 16:h + 16 + nk], d[h + 16 + nk:h + 16 + nk + nc]
+        st = glslc_stage(ctl, code) if ctl[:4] == CTL_MAGIC and len(ctl) >= 0x760 else None
+        if st and not check(label, st, ctl, code): out.append((f'{label}#RGXD@{h:#x}', st, ctl, code))
+    if len(out) != n: print(f'[RED] {label}: {n} control sections, {len(out)} shader records read; the rest are left out', flush=True)
+    return out
+
+def d11_pack_shaders(path, label, out):
+    """Double Eleven's resource pack (Red Dead Redemption's d11extra/langselect.pkdswitch, the language selection shown before the game): the data file holds the members one after another, its
+    index beside it (.pkiswitch) is u32 version 3, u32 0, u32 member count (22), then per member {u32 length, u32 stored length, u32 offset in the data file, u32 name hash}; a member whose stored
+    length differs from its length is one zlib stream. Members 4 and 5 are whole GLSLC outputs, the screen's pixel and vertex shader (98664fb56b9c9fdf, 70d4dd8068044bb5): without them the host
+    found no vertex shader for the first program the game draws with. The others are textures ('DFvN') and fonts ('BMF')"""
+    with open(path[:-len('.pkdswitch')] + '.pkiswitch', 'rb') as f: idx = f.read()
+    with open(path, 'rb') as f: d = f.read()
+    if len(idx) < 12: red(f'{label}: the pack index is cut short ({len(idx)} bytes)')
+    ver, _, n = struct.unpack_from('<3I', idx)
+    if ver != 3: red(f'{label}: pack index version {ver}: only 3 is known')
+    if 12 + 16 * n > len(idx): red(f'{label}: the pack index lists {n} members but holds {(len(idx) - 12) // 16}')
+    for k in range(n):
+        size, stored, off, h = struct.unpack_from('<4I', idx, 12 + 16 * k)
+        if off + stored > len(d): red(f'{label}: member {k} runs past the end of the data file')
+        m = d[off:off + stored]
+        if stored != size:
+            try: m = zlib.decompress(m)
+            except zlib.error as e: red(f'{label}: member {k} ({h:08x}) is no zlib stream: {e}')
+            if len(m) != size: red(f'{label}: member {k} ({h:08x}) inflates to {len(m)} bytes, the index says {size}')
+        lb = f'{label}#{h:08x}'
+        found = []; scan_blob(m, lb, found)
+        if not found: found = glslc_shaders(m, lb, need=False)
+        out.extend(found)
+
 CPK = b'CPK '
 def cpk_jobs(files, parts=64):
     """Every entry of every CRI CPK archive in ranges of about equal length (Bayonetta 2: six in the RomFS root, 9.5 GB, 6,091 files, 12 GB of them CRILAYLA-compressed; its shaders are BNSH
@@ -1092,6 +1161,7 @@ def tfxo_streams(d, label):
     return out
 
 RFRM, SNVN = b'RFRM', b'SNVN'
+SNVN_STREAM = re.compile(b'x|' + re.escape(bytes.fromhex('28b52ffd')))   # where a program record's stream may start: a zlib header, or a zstd frame (snvn_records)
 def rfrm_order(d, o):   # the byte order of the RFRM form or chunk at o, from its u64 length at +4: big-endian in Tropical Freeze (the Wii U engine), little-endian in Metroid Prime
     # Remastered; the reading that is a length is the small one (the other has the length's low bytes at the top)
     return '<' if struct.unpack_from('<Q', d, o + 4)[0] < struct.unpack_from('>Q', d, o + 4)[0] else '>'
@@ -1104,16 +1174,24 @@ def snvn_records(d, a, b, label, e='>'):
     """The program records of an SNVN chunk's data d[a:b]: each a u32 code length, u32 control length, a byte (0), u32 stream length (in the chunk's byte order e), then a zlib stream that inflates to
     exactly the two lengths: every stage's code area back to back, then their control sections in the same order (0x840 bytes each on SDK 4, 0x880 on SDK 12; control +0x704 = its code length).
     The tables before the records differ between files (MaterialArchive.arc's SNVN has one of 1,374 (offset, length) pairs, a material's has none), so the records are found by their
-    own lengths: a zlib header whose preceding 13 bytes give a stream that ends at exactly that length and inflates to exactly code + control bytes. → [(offset, [(ctl, code), …])]"""
+    own lengths: a zlib header whose preceding 13 bytes give a stream that ends at exactly that length and inflates to exactly code + control bytes. Metroid Prime 4: Beyond (SDK 19)
+    has the same 13 bytes before a zstd stream instead (the program's frame, then an empty one, both inside the stream length), and control sections of 0x880 bytes still, most with the
+    12-byte entries of +0x7e8 after them (nctl 0x1118 for two stages, one with two entries; so nctl is only a multiple of 4); 44 bytes the lengths do not count follow each stream. → [(offset, [(ctl, code), …])]"""
     import zlib
     out, i = [], a + 12
-    while (i := d.find(b'\x78', i + 1, b)) >= 0:
+    while m := SNVN_STREAM.search(d, i + 1, b):
+        i = m.start()
         ncode, nctl, _, nz = struct.unpack_from(e + 'IIBI', d, i - 13)
-        if not (nctl and not nctl % 0x40 and nctl < 1 << 20 and ncode < 1 << 24 and 0 < nz <= b - i): continue
-        z = zlib.decompressobj()
-        try: y = z.decompress(d[i:i + nz])
-        except zlib.error: continue
-        if not z.eof or z.unused_data or len(y) != ncode + nctl: continue
+        if not (nctl and not nctl % 4 and nctl < 1 << 20 and ncode < 1 << 24 and 0 < nz <= b - i): continue
+        if d[i] == 0x78:
+            z = zlib.decompressobj()
+            try: y = z.decompress(d[i:i + nz])
+            except zlib.error: continue
+            if not z.eof or z.unused_data: continue
+        else:
+            try: y = zstd_mod().decompress(d[i:i + nz])
+            except Exception: continue   # not a stream of whole frames: the magic's four bytes inside other data
+        if len(y) != ncode + nctl: continue
         stages, k, c = [], 0, ncode
         while c < len(y):
             if y[c:c + 4] != CTL_MAGIC: red(f'{label} SNVN record @{i:#x}: no control section at {c:#x}')
@@ -1121,6 +1199,7 @@ def snvn_records(d, a, b, label, e='>'):
             x, xn = struct.unpack_from('<II', y, c + 0x7e8)   # data GLSLC put after the section, not in its own length: 4 vertex stages of Metroid Prime Remastered's
             if xn and x >= n: n = x + xn                       # MaterialArchive.arc have 16 12-byte entries at +0x880 (+0x7e8 0x880, +0x7ec 0xc0, +0x7f0 16)
             stages.append((y[c:c + n], y[k:k + nk])); k += nk; c += n
+            if c < len(y) and y[c:c + 4] != CTL_MAGIC: c = ncode + (c - ncode + 15 & ~15)   # Metroid Prime 4: the next section starts on 16 bytes (one entry after a first stage: 0x890)
         if k != ncode: red(f'{label} SNVN record @{i:#x}: the code areas end at {k:#x}, the control sections start at {ncode:#x}')
         out.append((i, stages)); i += nz - 1
     return out
@@ -1178,24 +1257,26 @@ def rfrm_shaders(d, label):
     the entries, in the chunk's byte order. Tropical Freeze's (big-endian, the chunk right in the pack) are 36 bytes {fourcc type, 16-byte GUID, u64 offset, u64 length}; Metroid Prime
     Remastered's (little-endian, the chunk in a 'TOCC' form, the pack's first) are 52 bytes {fourcc type, 16-byte GUID, u32 version, u32 version, u64 offset, u64 length, u64 stored length},
     the stored length shorter for a compressed resource (none of its 778 MTRL resources is). Only 'MTRL' resources hold shaders (795 in Tropical Freeze's packs): an RFRM form whose data
-    after its 0x20-byte header is a zlib stream, holding an RFRM 'MTRL' form with an SNVN chunk (in Metroid Prime Remastered after an 'EXPT' chunk)"""
-    import zlib
+    after its 0x20-byte header is a zlib stream, holding an RFRM 'MTRL' form with an SNVN chunk (in Metroid Prime Remastered after an 'EXPT' chunk). Metroid Prime 4: Beyond's entries
+    are 60 bytes, the 52 and a u64 0, and the data of its MTRL forms is a zstd stream; its other resource types may be stored compressed (CBufferedCompression, as in retro_main_forms)"""
     if d[0x14:0x18] != b'PACK': return snvn_shaders(d, label)
     out, a = [], d.find(b'ADIR', 0x20)
     if a < 0: red(f'{label}: RFRM PACK without an ADIR chunk')
     _, _, end, o = rfrm_chunk(d, a)
     n = struct.unpack_from(o + 'I', d, a + 0x18)[0]
     size = (end - a - 0x1c) // n if n else 36
-    if size not in (36, 52) or a + 0x1c + n * size != end: red(f'{label}: ADIR of {n} entries in {end - a - 0x1c:#x} bytes, neither 36 nor 52 bytes each')
+    if size not in (36, 52, 60) or a + 0x1c + n * size != end: red(f'{label}: ADIR of {n} entries in {end - a - 0x1c:#x} bytes, neither 36, 52 nor 60 bytes each')
     for i in range(n):
         e = a + 0x1c + size * i
         if d[e:e + 4] != b'MTRL': continue
-        off, ln = struct.unpack_from(o + 'QQ', d, e + (28 if size == 52 else 20))
-        stored = struct.unpack_from(o + 'Q', d, e + 44)[0] if size == 52 else ln
+        off, ln = struct.unpack_from(o + 'QQ', d, e + (20 if size == 36 else 28))
+        stored = ln if size == 36 else struct.unpack_from(o + 'Q', d, e + 44)[0]
         if stored != ln: red(f'{label}: MTRL resource {d[e + 4:e + 20].hex()} is stored compressed ({stored:#x} of {ln:#x} bytes), which this reader does not decode')
         r = d[off:off + ln]
         if r[:4] != RFRM: red(f'{label}: MTRL resource {d[e + 4:e + 20].hex()} is not an RFRM form')
-        out += snvn_shaders(zlib.decompress(r[0x20:]) if r[0x20:0x21] == b'\x78' else r, f'{label}/{d[e + 4:e + 20].hex()}')
+        if r[0x20:0x21] == b'\x78': r = zlib.decompress(r[0x20:])
+        elif r[0x20:0x24] == ZSTD_MAGIC: r = zstd_mod().decompress(r[0x20:])
+        out += snvn_shaders(r, f'{label}/{d[e + 4:e + 20].hex()}')
     return out
 
 GFPAK = b'GFLXPACK'
@@ -2754,6 +2835,7 @@ def scan_blob(d, label, out, depth=0, left=None):
         for i, m in enumerate(cra.narc_members(d, label)): scan_blob(cra.undo(m), f'{label}/{i}', out, depth + 1)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if d[:4] == RGXD: out.extend(rgxd_shaders(d, label)); return
     if d[:4] == b'NDSR': out.extend(ndsr_shaders(d, label)); return
     if d[:4] == b'NDVE': out.extend(ndve_shaders(d, label)); return
     if shaders := sead_prim_shaders(d, label): out.extend(shaders); return
@@ -2954,6 +3036,9 @@ def scan_file_in(args):
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if path.endswith('.pkdswitch') and os.path.exists(path[:-len('.pkdswitch')] + '.pkiswitch'):   # Double Eleven's resource pack, read through its index (d11_pack_shaders)
+        d11_pack_shaders(path, '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] in (IDRK, PDRK):
         idrk_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -2974,6 +3059,9 @@ def scan_file_in(args):
         return rel, uniq_keys(found), var_pairs(found), lost or trees
     if len(args) > 2 and args[2][0] == FB_CAS:   # CompiledBytecode resources of a Frostbite cas file (frostbite_jobs)
         frostbite_shaders(path, rel, args[2][1], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and head[:4] == RPF6 and args[2][0] == RPF6:   # files of a Rockstar RPF6 archive (rpf_jobs)
+        rpf_shaders(path, rel, args[2][1], args[2][2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == PKZL:   # entries of a PlatinumGames PKZ (pkz_jobs)
         pkz_shaders(path, rel, args[2], found)
@@ -3015,7 +3103,8 @@ def scan_file_in(args):
         found += ue3_shaders(ue3_body(d, '/' + rel) if d[:4] == UE3_TAG else d, '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == RFRM:   # a Retro Studios form or pack (rfrm_shaders)
-        found += rfrm_shaders(open(path, 'rb').read(), '/' + rel)
+        from romfs import mmap   # mapped, not read: Metroid Prime 4's packs reach 3.9 GB and only their MTRL resources are looked at
+        with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: found += rfrm_shaders(d, '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == b'BERG':   # Snowdrop's SDF data slices: shader objects in individual compressed records
         with open(path, 'rb') as f: found += snowdrop_shaders(f.read(), '/' + rel)
@@ -3125,7 +3214,8 @@ def main():
         found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''), need=False)
         found += tfxo_streams(img, 'main' + ('@' + tag if tag else ''))   # YEBIS's effect file, a zlib stream in main (Pokémon Sword)
         found += retro_main_forms(img, 'main' + ('@' + tag if tag else ''))   # Retro's startup material archive, LZSS in main (Donkey Kong Country: Tropical Freeze)
-        found += raw_shaders(img, 'main' + ('@' + tag if tag else ''), {c for _, _, c, _ in found})
+        if RGXD in img: found += rgxd_shaders(img, 'main' + ('@' + tag if tag else ''))   # RAGE's built-in effects (Red Dead Redemption: 20 in main's data, 168 shaders that shaders.rpf lacks)
+        found += raw_shaders(img, 'main' + ('@' + tag if tag else ''), {c[:struct.unpack_from('<I', c, 0x20)[0]] for _, _, c, _ in found})   # compared at their own length, as raw_shaders reads them
         # NROs the game decodes at run time (Mario Tennis Fever: main is a boot stub, and the real code's data holds 11 shaders the game draws its UI and sky with): scanned like main, as no RomFS file holds them
         if not i:
             for n in boot_nros():
@@ -3164,8 +3254,9 @@ def main():
     ah_jobs, arhs = arh_jobs(files)   # Monolith's ARH1/ARD archives and embedded XBC1/HCPS programs
     fb_jobs, fbs = frostbite_jobs(files)   # EA SPORTS FC 27's Frostbite bundles, Oodle Leviathan decoded by the game's own decoder in the Mac host
     pd_jobs, pdats = pdat_jobs(files)   # Kirby Air Riders' PDAT archives: the PMAP records in byte ranges
-    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs + cr_jobs + zp_jobs + ah_jobs + fb_jobs + pd_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in cras and p not in zips and p not in arhs and p not in fbs and p not in pdats]
+    rp_jobs, rpfs = rpf_jobs(files, main_v)   # Red Dead Redemption's RPF6 archives, their tables decrypted with the key in main (rpf6.py)
+    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ck_jobs + cr_jobs + zp_jobs + ah_jobs + fb_jobs + pd_jobs + rp_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in cpks and p not in cras and p not in zips and p not in arhs and p not in fbs and p not in pdats and p not in rpfs]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         n = len(big) + len(files)
         results += pooled(ex, big, n) + pooled(ex, files, n, len(big), chunk=16)
